@@ -1,0 +1,196 @@
+---
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+---
+
+<!-- Knn, SVN, Decision Tree, Random Forest,Naive Bayes, regressao normal   -->
+
+# Wine Quality Prediction
+
+Notebook designed to predict heart failure based on other giver variables.
+ 
+**Source:** https://archive.ics.uci.edu/ml/datasets/wine+quality
+
+![](https://img.shields.io/badge/open-data-blue)
+<img alt="R" width="26px" src="https://raw.githubusercontent.com/github/explore/80688e429a7d4ef2fca1e82350fe8e3517d3494d/topics/r/r.png" />
+
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries, message=FALSE, warning=FALSE, include=FALSE}
+library(readr)
+library(dplyr)
+library(skimr)
+library(ggplot2)
+library(treemapify)
+library(Boruta)
+library(DescTools)
+library(caTools)
+library(ROCR)
+library(caret)
+library(cowplot)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+winequality_white <- read_delim("winequality-white.csv", 
+    delim = ";", escape_double = FALSE, trim_ws = TRUE)
+
+winequality_white$quality_binary <- ifelse(winequality_white$quality > 6, TRUE, FALSE)
+```
+
+Taking a look into how the data is distributed:
+```{r}
+skim(winequality_white)
+```
+
+As per the data quality, we have no missing values at any column and the types seems to be ok too.Now lets seek for possible outliers.
+First, with the onw with biggest $sd$:
+```{r}
+ggplot(winequality_white, aes(x=`total sulfur dioxide`)) + geom_histogram(bins = 40, fill = '#89BBFE')
+```
+```{r}
+sum(winequality_white$`total sulfur dioxide` > 300)
+```
+
+Six values with a huge gap.
+
+Now, with the second biggest $sd$:
+```{r}
+ggplot(winequality_white, aes(x=`free sulfur dioxide`)) + geom_histogram(bins = 40, fill = '#89BBFE')
+```
+
+```{r}
+sum(winequality_white$`free sulfur dioxide` > 100)
+```
+
+Since the dataset is relatively big, I'll simply substitute them with the median.
+
+```{r}
+winequality_white$`free sulfur dioxide`[winequality_white$`free sulfur dioxide` > 100] <- median(winequality_white$`free sulfur dioxide`)
+winequality_white$`total sulfur dioxide`[winequality_white$`total sulfur dioxide` > 300] <- median(winequality_white$`total sulfur dioxide`)
+skim(winequality_white)
+```
+
+For the rest, as the $sd$ and the observed ranges are ok, we'll leave it like that.
+
+
+
+```{r}
+correlation <- cor(winequality_white)
+corrplot(correlation, number.cex = .9, method = "square", 
+         hclust.method = "ward", order = "FPC",
+         type = "full", tl.cex=0.8,tl.col = "black")
+```
+
+```{r}
+box <- ggplot(winequality_white, aes(x = quality_binary, y = alcohol, group = quality_binary, fill = quality_binary)) + theme_minimal() + geom_boxplot(alpha=0.5) + scale_fill_manual(breaks = winequality_white$quality_binary, values = c("#C9DDFF", "#DE6C83"))
+box
+```
+
+
+
+
+
+
+```{r}
+boruta.bank_train <- Boruta(quality_binary~., data = winequality_white, doTrace = 2)
+
+plot(boruta.bank_train, xlab = "", xaxt = "n")
+lz<-lapply(1:ncol(boruta.bank_train$ImpHistory),function(i)
+boruta.bank_train$ImpHistory[is.finite(boruta.bank_train$ImpHistory[,i]),i])
+names(lz) <- colnames(boruta.bank_train$ImpHistory)
+Labels <- sort(sapply(lz,median))
+axis(side = 1,las=2,labels = names(Labels),
+at = 1:ncol(boruta.bank_train$ImpHistory), cex.axis = 0.7)
+```
+
+```{r, width=0.8}
+cormat <- round(cor(winequality_white$quality_binary,winequality_white),2)
+cormat
+```
+
+
+
+
+
+
+```{r}
+library(caTools)
+set.seed(1322)
+split <- sample.split(winequality_white$quality_binary, SplitRatio = 0.8)
+
+train_reg <- subset(winequality_white, split == "TRUE")
+test_reg <- subset(winequality_white, split == "FALSE")
+```
+
+
+```{r}
+
+logistic_model <- glm(quality_binary ~ alcohol + `free sulfur dioxide`+ `residual sugar` + chlorides + density,
+                      data = train_reg,
+                      family = "binomial")
+```
+
+```{r}
+summary(logistic_model)
+```
+
+```{r}
+predict_reg <- predict(logistic_model, 
+                       test_reg, type = "response")
+predict_reg <- ifelse(predict_reg > 0.2, 1, 0)
+
+```
+
+ROC and AUC
+
+```{r}
+
+ROCPred <- prediction(predict_reg, test_reg$quality_binary) 
+ROCPer <- performance(ROCPred, measure = "tpr", 
+                             x.measure = "fpr")
+   
+auc <- performance(ROCPred, measure = "auc")
+auc <- auc@y.values[[1]]
+
+plot(ROCPer, colorize = TRUE, 
+     print.cutoffs.at = seq(0.1, by = 0.1), 
+     main = "ROC CURVE")
+abline(a = 0, b = 1)
+   
+auc <- round(auc, 4)
+legend(.6, .4, auc, title = "AUC", cex = 1) 
+```
+
+The AUC for a higher sensitivity (0.5) is slight higher, but with way more false negatives. 
+
+
+```{r}
+table(test_reg$quality_binary, predict_reg)
+```
+Only one false negative.
+
+```{r}
+missing_classerr <- mean(predict_reg != test_reg$quality_binary)
+print(paste('Accuracy =', 1 - missing_classerr))
+```
+Good accuracy, could be better with higher sensitivity, but due to lower false positives.
+
+```{r}
+predicted.data <- data.frame(
+  probability.of.hd = logistic_model$fitted.values, 
+  hd = train_reg$quality_binary)
+
+predicted.data <- predicted.data[order(predicted.data$probability.of.hd, decreasing = FALSE),]
+predicted.data$rank <- 1:nrow(predicted.data)
+
+ggplot(data=predicted.data, aes(x=rank, y=probability.of.hd)) + geom_point(aes(color=hd), alpha=1, shape=4, stroke=2) +
+  xlab("index") + ylab("Predicted Probability") + geom_hline(yintercept=0.1, linetype="dashed", color = "red")
+
+```
