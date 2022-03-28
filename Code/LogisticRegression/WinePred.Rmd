@@ -6,8 +6,6 @@ output:
     theme: united
 ---
 
-<!-- Knn, SVN, Decision Tree, Random Forest,Naive Bayes, regressao normal   -->
-
 # Wine Quality Prediction
 
 Notebook designed to predict wine quality based on $11$ possible features. The approach here is to predict whether the wine is good or bad rather than predicting the quality score of it. Due to that decision, there was a cutoff value to determinate if it is good or bad.Therefore, the prediction will only say if it is a bad or good wine.
@@ -34,6 +32,37 @@ library(caTools)
 library(ROCR)
 library(caret)
 library(cowplot)
+library(corrplot)
+```
+
+```{r include=FALSE}
+get_train_batch <- function(majority, minority, start, end){
+  df_train <- rbind(majority[start:end,], minority);
+  return(df_train)
+}
+```
+
+```{r include=FALSE}
+train_glm <- function(train) {
+  model <- glm(quality_binary ~ alcohol + `volatile acidity` + chlorides + `free sulfur dioxide` + `residual sugar` + pH + sulphates,
+                      data = train,
+                      family = "binomial")
+  summary(model)
+  response <- predict(model, 
+                       test_reg, type = "response")
+  response <- logit_to_probability(response)
+  a <- ifelse(response > 0.25, 1, 0)
+  return(a)
+}
+```
+
+
+```{r include=FALSE}
+logit_to_probability <- function(logit){
+  odds <- exp(logit)
+  probability <- odds / (1 + odds)
+  return(probability)
+}
 ```
 
 
@@ -45,6 +74,7 @@ winequality_white$quality_binary <- ifelse(winequality_white$quality > 6, FALSE,
 ```
 The cutoff value is 6 for the quality. Therefore there will be un imbalance to treat later on and it is more realistic division in my understanding.
 
+# Exploratory data Analysis and Outlier Treatment
 
 Taking a look into how the data is distributed:
 ```{r}
@@ -90,7 +120,11 @@ ggplot(winequality_white, aes(x=`total sulfur dioxide`)) + geom_histogram(bins =
 
 Now, with the second biggest $sd$:
 ```{r}
-ggplot(winequality_white, aes(x=`free sulfur dioxide`)) + geom_histogram(bins = 40, fill = '#89BBFE')
+hist <- ggplot(winequality_white, aes(x=`free sulfur dioxide`)) + geom_histogram(bins = 40, fill = '#89BBFE')
+box <- ggplot(winequality_white, aes(`free sulfur dioxide`)) + geom_boxplot()
+plot_grid(hist, box, 
+                   ncol = 1, rel_heights = c(2, 1),
+                   align = 'v', axis = 'lr')
 ```
 
 
@@ -120,12 +154,24 @@ winequality_white<- subset(winequality_white, winequality_white$`free sulfur dio
 
 The new distribuition looks like that now: 
 ```{r}
-ggplot(winequality_white, aes(x=`free sulfur dioxide`)) + geom_histogram(bins = 40, fill = '#89BBFE')
+hist <- ggplot(winequality_white, aes(x=`free sulfur dioxide`)) + geom_histogram(bins = 40, fill = '#89BBFE')
+box <- ggplot(winequality_white, aes(x=`free sulfur dioxide`)) + geom_boxplot()
+plot_grid(hist, box, 
+                   ncol = 1, rel_heights = c(2, 1),
+                   align = 'v', axis = 'lr')
 ```
 
+
+
 ```{r}
-boxplot(winequality_white$`free sulfur dioxide`)
+outliers <- boxplot(winequality_white$density)$out
 ```
+Density also has it's problems, but no big deal. As the deviation here is small, I'll simple substitute with the median.
+
+```{r}
+winequality_white$density[winequality_white$density %in% outliers] <- median(winequality_white$density)
+```
+
 
 One important thing to keep in mind, is the imbalance for the target variable. The FALSE variable is $3.6$ times bigger than the TRUE variable. It will be handled at the prediction phase.
 
@@ -135,22 +181,20 @@ One important thing to keep in mind, is the imbalance for the target variable. T
 Starting with a basic correlation plot
 
 ```{r}
-library(corrplot)
 correlation <- cor(winequality_white)
 corrplot(correlation, number.cex = .9, method = "square", 
          hclust.method = "ward", order = "FPC",
          type = "full", tl.cex=0.8,tl.col = "black")
 ```
-We can see that one of the most correlated variables to the target is alcohol. Let's take a look at it
+We can see that one of the most correlated variables to the target is alcohol.
 
-```{r}
-ggplot(winequality_white, aes(x=quality_binary, y=alcohol, fill=quality_binary, alpha = 0.2)) + geom_boxplot()
-```
-There is a clear difference here, higher alcohol can mean worst wine.
+
+
 
 
 ## Feature Importance
-I'll start taking a Boruta test to see the most relevant features to out analysis.
+After the exploratory data analysis, we have a good idea about the main features that impacts the target variable. 
+But now I'l take a Boruta test to see the most relevant features to out analysis.
 ```{r}
 winequality_white <- winequality_white[-c(12)]
 boruta.bank_train <- Boruta(quality_binary~., data = winequality_white, doTrace = 2)
@@ -165,33 +209,30 @@ at = 1:ncol(boruta.bank_train$ImpHistory), cex.axis = 0.7)
 ```
 
 
-
+#Prediction
 ## Simple prediction with plain logistic regression
 
+
 ```{r}
-set.seed(1322)
+set.seed(12)
 split <- sample.split(winequality_white$quality_binary, SplitRatio = 0.8)
 
 train_reg <- subset(winequality_white, split == "TRUE")
 test_reg <- subset(winequality_white, split == "FALSE")
-```
 
-
-```{r}
-logistic_model <- glm(quality_binary ~ alcohol + `volatile acidity` + chlorides + density + `free sulfur dioxide` + `residual sugar` + pH,
+logistic_model <- glm(quality_binary ~ alcohol + `volatile acidity` + chlorides  + `free sulfur dioxide` + `residual sugar` + pH + sulphates,
                       data = train_reg,
                       family = "binomial")
-```
 
-```{r}
 summary(logistic_model)
 ```
-
+After exploring the possible models, the one with best AIC was the one above. Now let's see what would be the best threshold for our model.
 
 ```{r}
 library(pROC)
 response <- predict(logistic_model, 
                        test_reg, type = "response")
+
 
 rTest <- logit_to_probability(response)
 
@@ -202,7 +243,7 @@ roc(test_reg$quality_binary, rTest, plot=TRUE, legacy.axes=TRUE, percent = TRUE,
 ```
 
 ```{r}
-roc.info <- roc(test_reg$quality_binary, response, legacy.axes=TRUE)
+roc.info <- roc(test_reg$quality_binary, rTest, legacy.axes=TRUE)
 roc.df <- data.frame(
   tpp=roc.info$sensitivities*100,
   fpp=(1- roc.info$specificities)*100,
@@ -213,46 +254,33 @@ In a imaginary situation, where we want to prevent wine that are bad to be class
 At this moment, False Positive means that the model said the wine was bad but actually is good (pay less drink something good). Looking at a threshold that makes True positive higher, while not caring too much about False Positive.
 
 ```{r}
-roc.df %>% filter(roc.df$tpp > 70, roc.df$tpp < 90)
+roc.df %>% filter(roc.df$tpp > 80, roc.df$tpp < 90)
 ```
 
-
+With a better true positive rate with controlled false positive rate, $0.34$ was opted as a threshold.
 ```{r}
-predict_reg <- ifelse(response > 0.34, 1, 0)
-```
+predict_reg <- ifelse(rTest > 0.58, 1, 0)
 
-
-```{r}
 confMatrix <- table(test_reg$quality_binary, predict_reg)
 confMatrix
 ```
 
 ```{r}
 accuracy <- (confMatrix[1,1] + confMatrix[2,2])/(sum(confMatrix))
+accuracy
 precicion <- (confMatrix[2,2])/(confMatrix[2,2] + confMatrix[1,2])
+precicion
 recall <- (confMatrix[2,2])/(confMatrix[2,1] + confMatrix[2,2])
+recall
 f1 <- 2 * (precicion * recall) / (precicion + recall)
+f1
 ```
 
 As we are more worried with the False Negatives, the Recall is more adequate to our performance measure.
 
+*BUT*, the imbalance is a big problem. Those metrics are not that good indicators for imbalanced datasets. Let's try to deal with it
 
-
-```{r fig.width=10}
-predicted.data <- data.frame(
-  probability.of.hd = logistic_model$fitted.values, 
-  hd = train_reg$quality_binary)
-
-predicted.data <- predicted.data[order(predicted.data$probability.of.hd, decreasing = FALSE),]
-predicted.data$rank <- 1:nrow(predicted.data)
-
-ggplot(data=predicted.data, aes(x=rank, y=probability.of.hd)) + geom_point(aes(color=hd), alpha=1, shape=4, stroke=2) +
-  xlab("index") + ylab("Predicted Probability") + geom_hline(yintercept=0.34, linetype="dashed", color = "red")
-
-```
-
-
-# Ensambling
+## Ensambling
 As the data is imbalanced, let's try to apply an ensemble method to evaluate our model better:
 
 
@@ -279,43 +307,48 @@ for (i in 1:length(model1)) {
   i <- i + 1
 }
 
-table(test_reg$quality_binary, finalModel)
+```
+
+Here, the dataset is divided into three. Each one has the same proportion of bad and good wines. Then, the model is created and the result is computed using a Majority Vote method.
+Now, the metrics are good and with more confidence to it.
+
+```{r}
+confMatrix <- table(test_reg$quality_binary, finalModel)
+confMatrix
 
 accuracy <- (confMatrix[1,1] + confMatrix[2,2])/(sum(confMatrix))
+accuracy
 precicion <- (confMatrix[2,2])/(confMatrix[2,2] + confMatrix[1,2])
+precicion
 recall <- (confMatrix[2,2])/(confMatrix[2,1] + confMatrix[2,2])
+recall
 f1 <- 2 * (precicion * recall) / (precicion + recall)
+f1
 ```
+Ensambling the data was not too helpful here. Even with good results, they were slightly better.
 
-
+To guarantee the prediction threshold, I'll check for one of the created datasets
 ```{r}
-get_train_batch <- function(majority, minority, start, end){
-  df_train <- rbind(majority[start:end,], minority);
-  return(df_train)
-}
-```
-
-```{r}
-train_glm <- function(train) {
-  model <- glm(quality_binary ~ alcohol + `volatile acidity` + chlorides + density + `free sulfur dioxide` + `residual sugar` + pH,
-                      data = train,
+testModel <- glm(quality_binary ~ alcohol + `volatile acidity` + chlorides + density + `free sulfur dioxide` + `residual sugar` + pH + sulphates,
+                      data = train1,
                       family = "binomial")
-  summary(model)
-  response <- predict(model, 
+
+response <- predict(testModel, 
                        test_reg, type = "response")
-  response <- logit_to_probability(response)
-  a <- ifelse(response > 0.2, 1, 0)
-  return(a)
-}
+
+rTest <- logit_to_probability(response)
+
+roc.info <- roc(test_reg$quality_binary, rTest, legacy.axes=TRUE)
+roc.df <- data.frame(
+  tpp=roc.info$sensitivities*100,
+  fpp=(1- roc.info$specificities)*100,
+  thresholds=roc.info$thresholds
+)
+
+roc.df %>% filter(roc.df$tpp > 80, roc.df$tpp < 90)
+
+
 ```
 
-
-```{r}
-logit_to_probability <- function(logit){
-  odds <- exp(logit)
-  probability <- odds / (1 + odds)
-  return(probability)
-}
-```
-
-
+# Conclusion
+Exploring Logistic Regression is challenging and can go much further then what was here covered. But for a first analysis is good enough.  
