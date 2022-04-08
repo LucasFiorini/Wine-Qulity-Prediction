@@ -22,6 +22,105 @@ Notebook designed to predict wine quality based on $11$ possible features. The a
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+
+```{r}
+get_train_batch <- function(majority, minority, start, end){
+  df_train <- rbind(majority[start:end,], minority);
+  return(df_train)
+}
+```
+
+```{r}
+train_glm <- function(train, test_reg) {
+  
+  
+  model <- glm(quality_binary ~ alcohol + `volatile acidity` + chlorides + density + `free sulfur dioxide` + `residual sugar` + pH,
+                      data = train,
+                      family = "binomial")
+  summary(model)
+  response <- predict(model, 
+                       test_reg, type = "response")
+  response <- logit_to_probability(response)
+
+  # find best sensibility
+  maxRecall <- 0
+  maxThresh <- as.numeric()
+  for (i in seq(0.1, 0.95, by = 0.01)) {
+    out <- ifelse(response > i, 1, 0)
+    
+    confMatrix <- table(test_reg$quality_binary, out)
+    recall <- (confMatrix[2,2])/(confMatrix[2,1] + confMatrix[2,2])
+    
+    if(recall > maxRecall){
+      maxRecall <- recall
+      maxThresh <- i
+    }
+  }
+  
+  out <- ifelse(response > maxThresh, 1, 0)
+  return(out)
+}
+```
+
+
+```{r}
+logit_to_probability <- function(logit){
+  odds <- exp(logit)
+  probability <- odds / (1 + odds)
+  return(probability)
+}
+```
+
+```{r}
+customSummary <- function (data, lev = NULL, model = NULL){
+  senslist <- as.numeric()
+  preclist <- as.numeric()
+  f1List <- as.numeric()
+  accList <- as.numeric()
+  for(i in seq(0.1, 0.95, 0.05)){
+    predi <- factor(ifelse(data[, "bad"] > i, "bad", "good"))
+    singlesens <- sensitivity(predi, data[, "obs"], "bad")
+    senslist <- c(senslist, singlesens)
+    
+    cm <- table(predi,data[,"obs"])
+
+    if(sum(dim(cm)) == 4) {
+      recall <- cm[1,2] / (cm[1,2] + cm[1,1])
+      precision <- cm[1,2]/(cm[1,2] + cm[2,2])
+      f1 <- 2 * precision * recall / (precision + recall)
+      acc <- (cm[2,1] + cm[1,2]) / sum(cm)
+      
+      preclist <- c(preclist, precision)
+      f1List <- c(f1List, f1)
+      accList <- c(accList, acc)
+    }
+  }
+  
+  max(senslist) -> sensmax
+  refPrec <- preclist[which(senslist == max(senslist))[1]]
+  refF1 <- f1List[which(senslist == max(senslist))[1]]
+  refAcc <- accList[which(senslist == max(senslist))[1]]
+  out <- c(sensmax, refPrec, refF1, refAcc)
+
+  names(out) <- c("SensMax", "RefPrec", "RefF1", "refAcc")
+  out
+}
+```
+
+```{r}
+classMetrics <- function(confMatrix) {
+  accuracy <- (confMatrix[1,1] + confMatrix[2,2])/(sum(confMatrix))
+  precicion <- (confMatrix[2,2])/(confMatrix[2,2] + confMatrix[1,2])
+  recall <- (confMatrix[2,2])/(confMatrix[2,1] + confMatrix[2,2])
+  f1 <- 2 * (precicion * recall) / (precicion + recall)
+  metrics <- c(accuracy, precicion, recall, f1)
+
+  names(metrics) <- c("accuracy", "precision", "recall", "f1")
+  metrics
+}
+```
+
+
 ```{r libraries, message=FALSE, warning=FALSE, include=FALSE}
 library(readr)
 library(dplyr)
@@ -31,7 +130,6 @@ library(treemapify)
 library(Boruta)
 library(DescTools)
 library(caTools)
-library(ROCR)
 library(caret)
 library(cowplot)
 ```
@@ -52,6 +150,7 @@ skim(winequality_white)
 ```
 
 As per the data quality, we have no missing values at any column and the types seems to be ok too.Now lets seek for possible outliers.
+
 First, with the ones with bigger $sd$:
 ```{r}
 ggplot(winequality_white, aes(x=`total sulfur dioxide`)) + geom_histogram(bins = 40, fill = '#89BBFE')
@@ -63,7 +162,7 @@ boxplot(winequality_white$`total sulfur dioxide`)$out
 
 Many outliers to get rid of, digging further:
 
-```{r}
+```{r message=FALSE, warning=FALSE}
 library(EnvStats)
 test <- rosnerTest(winequality_white$`total sulfur dioxide`,
   k = 20,
@@ -181,9 +280,6 @@ test_reg <- subset(winequality_white, split == "FALSE")
 logistic_model <- glm(quality_binary ~ alcohol + `volatile acidity` + chlorides + density + `free sulfur dioxide` + `residual sugar` + pH,
                       data = train_reg,
                       family = "binomial")
-```
-
-```{r}
 summary(logistic_model)
 ```
 
@@ -219,38 +315,45 @@ roc.df %>% filter(roc.df$tpp > 70, roc.df$tpp < 90)
 
 ```{r}
 predict_reg <- ifelse(response > 0.34, 1, 0)
-```
 
-
-```{r}
 confMatrix <- table(test_reg$quality_binary, predict_reg)
 confMatrix
 ```
 
 ```{r}
-accuracy <- (confMatrix[1,1] + confMatrix[2,2])/(sum(confMatrix))
-precicion <- (confMatrix[2,2])/(confMatrix[2,2] + confMatrix[1,2])
-recall <- (confMatrix[2,2])/(confMatrix[2,1] + confMatrix[2,2])
-f1 <- 2 * (precicion * recall) / (precicion + recall)
+classMetrics(confMatrix)
 ```
 
 As we are more worried with the False Negatives, the Recall is more adequate to our performance measure.
 
 
-
 ```{r fig.width=10}
 predicted.data <- data.frame(
-  probability.of.hd = logistic_model$fitted.values, 
-  hd = train_reg$quality_binary)
+  probability = rTest, 
+  obs = test_reg$quality_binary)
 
-predicted.data <- predicted.data[order(predicted.data$probability.of.hd, decreasing = FALSE),]
+predicted.data <- predicted.data[order(predicted.data$probability, decreasing = FALSE),]
 predicted.data$rank <- 1:nrow(predicted.data)
 
-ggplot(data=predicted.data, aes(x=rank, y=probability.of.hd)) + geom_point(aes(color=hd), alpha=1, shape=4, stroke=2) +
+ggplot(data=predicted.data, aes(x=rank, y=probability)) + geom_point(aes(color=obs), alpha=1, shape=4, stroke=2) +
   xlab("index") + ylab("Predicted Probability") + geom_hline(yintercept=0.34, linetype="dashed", color = "red")
 
 ```
+# Simple Overfitting test
+```{r}
+library(caret)
+winequality_white$quality_binary <- as.factor(winequality_white$quality_binary)
+levels(winequality_white$quality_binary) <- c("good", "bad")
 
+tr_control <- trainControl(method = "cv", summaryFunction = customSummary, number = 5, classProbs=TRUE)
+
+model <- train(quality_binary ~ alcohol + `volatile acidity` + chlorides + density + `free sulfur dioxide` + `residual sugar` + pH,
+               data = winequality_white, method = "glm", family = "binomial", trControl = tr_control)
+
+print(model)
+```
+
+the base model seems to be really close to the cross validated one. Therefore it is safe to move on an try to address the imbalance.
 
 # Ensambling
 As the data is imbalanced, let's try to apply an ensemble method to evaluate our model better:
@@ -261,61 +364,29 @@ badWines <- train_reg[train_reg$quality_binary == TRUE,]
 goodWines <- train_reg[train_reg$quality_binary == FALSE,]
 
 train1 <- get_train_batch(badWines, goodWines, 1, 1008)
-model1 <- train_glm(train1)
+model1 <- train_glm(train1, test_reg)
 train2 <- get_train_batch(badWines, goodWines,1008, 2016);
-model2 <- train_glm(train2)
+model2 <- train_glm(train2, test_reg)
 train3 <- get_train_batch(badWines, goodWines,2016, 3024);
-model3 <- train_glm(train3)
+model3 <- train_glm(train3, test_reg)
 
-finalModel <- vector()
+finalPred <- vector()
 i <- 1
 for (i in 1:length(model1)) {
   result <- model1[i] + model2[i] + model3[i]
   if (result > 1) {
-    finalModel[i] <- 1
+    finalPred[i] <- 1
   } else {
-    finalModel[i] <- 0
+    finalPred[i] <- 0
   }
   i <- i + 1
 }
 
-table(test_reg$quality_binary, finalModel)
+confMatrix <- table(test_reg$quality_binary, finalPred)
 
-accuracy <- (confMatrix[1,1] + confMatrix[2,2])/(sum(confMatrix))
-precicion <- (confMatrix[2,2])/(confMatrix[2,2] + confMatrix[1,2])
-recall <- (confMatrix[2,2])/(confMatrix[2,1] + confMatrix[2,2])
-f1 <- 2 * (precicion * recall) / (precicion + recall)
+
+classMetrics(confMatrix)
 ```
 
-
-```{r}
-get_train_batch <- function(majority, minority, start, end){
-  df_train <- rbind(majority[start:end,], minority);
-  return(df_train)
-}
-```
-
-```{r}
-train_glm <- function(train) {
-  model <- glm(quality_binary ~ alcohol + `volatile acidity` + chlorides + density + `free sulfur dioxide` + `residual sugar` + pH,
-                      data = train,
-                      family = "binomial")
-  summary(model)
-  response <- predict(model, 
-                       test_reg, type = "response")
-  response <- logit_to_probability(response)
-  a <- ifelse(response > 0.2, 1, 0)
-  return(a)
-}
-```
-
-
-```{r}
-logit_to_probability <- function(logit){
-  odds <- exp(logit)
-  probability <- odds / (1 + odds)
-  return(probability)
-}
-```
-
+Here I tried to find what was the highest recall(sensitivity) looks like while ensambling.It does not means that it is the best model scenario. We don't know in which situation we are in, if that precision is acceptable or if it should be a little higher. Anyways, I stop here, won't boot to don't enlarge this notebook even further. 
 
